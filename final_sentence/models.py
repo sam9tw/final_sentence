@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from queue import Queue
+from time import monotonic
 
 
 @dataclass
@@ -41,6 +42,13 @@ class GameState:
     player_id: int = 1
     match_status: str = "Lost"
     leaderboard_saved: bool = False
+    current_combo: int = 0
+    max_combo: int = 0
+    last_judgement: str = "Ready"
+    last_hit_time: float = field(default_factory=monotonic)
+    shake_offset_x: int = 0
+    shake_offset_y: int = 0
+    shake_job: object = None
 
 
 @dataclass
@@ -70,6 +78,7 @@ class MultiplayerState:
     pending_article_indices: list = None
     multiplayer_status_text_id: object = None
     match_finished: bool = False
+    remote_progress: dict = field(default_factory=dict)
 
 
 @dataclass

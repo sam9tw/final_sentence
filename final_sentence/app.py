@@ -7,6 +7,7 @@ import math
 import socket 
 import threading 
 import queue 
+from time import monotonic
 from PIL import Image ,ImageTk 
 
 from .audio import AudioManager 
@@ -252,6 +253,7 @@ def host_start_multiplayer_match ():
     if not multiplayer .is_host :return 
     multiplayer .pending_article_indices =random .sample (range (len (PREDEFINED_TEXTS )),5 )
     multiplayer .match_finished =False 
+    multiplayer .remote_progress ={}
     for client in multiplayer .connected_clients :
         client ["alive"]=True 
     broadcast_to_clients ({"type":"start","article_indices":multiplayer .pending_article_indices })
@@ -278,7 +280,12 @@ def handle_network_event (event ):
     elif event_type =="start":
         multiplayer .pending_article_indices =event .get ("article_indices")
         multiplayer .match_finished =False 
+        multiplayer .remote_progress ={}
         play_btn_clicked (is_multiplayer_start =True )
+    elif event_type =="progress":
+        if event .get ("name")!=multiplayer .player_name :
+            multiplayer .remote_progress [event .get ("name","Player")]=event .get ("percent",0.0 )
+            update_hud ()
     elif event_type =="remote_result":
         name =event .get ("name","Player")
         result =event .get ("result")
@@ -290,6 +297,7 @@ def handle_network_event (event ):
             for client in multiplayer .connected_clients :
                 if client ["name"]==name :
                     client ["alive"]=False 
+            multiplayer .remote_progress .pop (name ,None )
             if game .game_active and multiplayer .connected_clients and all (not client .get ("alive",True )for client in multiplayer .connected_clients ):
                 game_win ()
     elif event_type =="match_result":
@@ -343,7 +351,12 @@ def initialize_game (article_indices =None ):
     stats .article_mistakes =0 
     stats .wpm_list =[]
     stats .acc_list =[]
+    multiplayer .remote_progress ={}
     game .leaderboard_saved = False
+    game .current_combo =0 
+    game .max_combo =0 
+    game .last_judgement ="Ready"
+    game .last_hit_time =monotonic ()
     game .is_pre_game =True 
     game .pre_game_time =5 
     game .time_left =240 
@@ -382,6 +395,7 @@ def initialize_game (article_indices =None ):
     update_line_highlight ()
     update_hud ()
     update_clock_display ()
+    broadcast_progress_update ()
 
     widgets .main_canvas .delete ("pre_game_text")
     widgets .main_canvas .create_text (layout .center_x ,int (layout .screen_h *0.08 ),text ="Game starts in:\n00:05",
@@ -435,6 +449,103 @@ def update_hud ():
 # Refresh the roulette and lives HUD.
     draw_revolver (0 )
     draw_lives ()
+    draw_feedback_hud ()
+
+def draw_feedback_hud ():
+# Draw combo, judgement, and multiplayer progress text.
+    widgets .main_canvas .delete ("feedback_hud")
+    combo_color ="#ffd54a"if game .current_combo >0 else "#8e8a80"
+    widgets .main_canvas .create_text (
+    layout .center_x ,
+    max (30 ,layout .base_y -70 ),
+    text =f"{game .last_judgement }   Combo x{game .current_combo }",
+    font =("Courier New",20 ,"bold"),
+    fill =combo_color ,
+    tags ="feedback_hud"
+    )
+    if multiplayer .multiplayer_mode and multiplayer .remote_progress :
+        progress_lines =[]
+        for name ,percent in multiplayer .remote_progress .items ():
+            progress_lines .append (f"{name }: {percent :>5.1f}%")
+        widgets .main_canvas .create_text (
+        layout .screen_w -120 ,
+        max (90 ,layout .base_y +10 ),
+        text ="\n".join (progress_lines ),
+        font =("Courier New",14 ,"bold"),
+        fill ="#72d477",
+        justify ="right",
+        tags ="feedback_hud"
+        )
+
+def judge_hit_timing ():
+# Grade the latest correct keypress by rhythm timing.
+    now =monotonic ()
+    delta =now -game .last_hit_time 
+    game .last_hit_time =now 
+    if delta <=0.22 :
+        return "Perfect"
+    if delta <=0.45 :
+        return "Good"
+    return "Good"
+
+def register_hit_feedback ():
+# Update combo and judgement after a correct keypress.
+    game .last_judgement =judge_hit_timing ()
+    game .current_combo +=1 
+    if game .current_combo >game .max_combo :
+        game .max_combo =game .current_combo 
+    update_hud ()
+
+def register_miss_feedback ():
+# Reset combo and mark the latest judgement as a miss.
+    game .last_judgement ="Miss"
+    game .current_combo =0 
+    update_hud ()
+
+def compute_progress_percent ():
+# Convert local article progress into a single completion percentage.
+    completed_articles =game .current_article_idx 
+    article_total =len (game .articles )or 1 
+    current_article =game .articles [game .current_article_idx ]if game .articles and game .current_article_idx <len (game .articles )else ""
+    current_ratio =(game .current_index /len (current_article ))if current_article else 0.0 
+    return min (100.0 ,((completed_articles +current_ratio )/article_total )*100.0 )
+
+def broadcast_progress_update ():
+# Send the local progress percent to other multiplayer players.
+    if not multiplayer .multiplayer_mode :
+        return
+    payload ={"type":"progress","name":multiplayer .player_name ,"percent":round (compute_progress_percent (),1 )}
+    if multiplayer .is_host :
+        handle_network_event (payload )
+        broadcast_to_clients (payload )
+    elif multiplayer .host_socket :
+        send_json (multiplayer .host_socket ,payload )
+
+def shake_screen (strength =14 ,steps =8 ):
+# Apply a short camera shake to the main canvas.
+    if widgets .main_canvas is None :
+        return
+    if game .shake_job :
+        widgets .root .after_cancel (game .shake_job )
+        game .shake_job =None 
+    game .shake_offset_x =0 
+    game .shake_offset_y =0 
+
+    def step_shake (remaining ):
+    # Advance one shake step and restore the canvas at the end.
+        if remaining <=0 :
+            widgets .main_canvas .move ("all",-game .shake_offset_x ,-game .shake_offset_y )
+            game .shake_offset_x =0 
+            game .shake_offset_y =0 
+            game .shake_job =None 
+            return
+        widgets .main_canvas .move ("all",-game .shake_offset_x ,-game .shake_offset_y )
+        game .shake_offset_x =random .randint (-strength ,strength )
+        game .shake_offset_y =random .randint (-strength //2 ,strength //2 )
+        widgets .main_canvas .move ("all",game .shake_offset_x ,game .shake_offset_y )
+        game .shake_job =widgets .root .after (18 ,lambda :step_shake (remaining -1 ))
+
+    step_shake (steps )
 
 def run_pre_game_timer ():
 # Run the pre-game countdown.
@@ -494,6 +605,7 @@ def start_roulette ():
     game .roulette_revealed =True 
     game .is_frozen =True 
     audio .play ("spin")
+    shake_screen (18 ,10 )
 
     empty_chambers =[i for i ,loaded in enumerate (game .chambers )if not loaded ]
     if empty_chambers :
@@ -590,6 +702,7 @@ def handle_keypress (event ):
 
     if char ==expected_char :
         audio .play ("type")
+        register_hit_feedback ()
 
         stats .total_chars_typed +=1 
         stats .article_chars +=1 
@@ -637,8 +750,11 @@ def handle_keypress (event ):
             widgets .text_display .mark_set ("insert",f"{mark_start } + {game .current_index } chars")
             update_line_highlight ()
             widgets .text_display .see ("insert")
+        broadcast_progress_update ()
     else :
         audio .play ("wrong")
+        register_miss_feedback ()
+        shake_screen (10 ,6 )
         game .mistakes +=1 
         stats .total_mistakes +=1 
         stats .article_mistakes +=1 
@@ -740,6 +856,7 @@ def animate_loading_bar ():
         widgets .screen_text .insert (tk .END ,"\n"+PREFIX_SPACES )
         widgets .screen_text .see (tk .END )
         widgets .screen_text .config (state =tk .DISABLED )
+        broadcast_progress_update ()
 
 def update_line_highlight ():
 # Highlight the active typing line.
@@ -784,26 +901,30 @@ def show_stats_on_screen (status_type ):
     widgets .screen_text .config (state =tk .NORMAL )
     widgets .screen_text .delete ("1.0",tk .END )
 
-    avg_wpm =sum (stats .wpm_list )//len (stats .wpm_list )if stats .wpm_list else 0 
-    max_wpm =max (stats .wpm_list )if stats .wpm_list else 0 
+    summary =get_match_summary ()
+    avg_wpm =summary ["avg_wpm"]
+    max_wpm =summary ["max_wpm"]
     last_wpm =stats .wpm_list [-1 ]if stats .wpm_list else 0 
-    avg_acc =sum (stats .acc_list )/len (stats .acc_list )if stats .acc_list else 0.0 
+    avg_acc =summary ["avg_acc"]
     max_acc =max (stats .acc_list )if stats .acc_list else 0.0 
     last_acc =stats .acc_list [-1 ]if stats .acc_list else 0.0 
+    rank =summary ["rank"]
 
     stats_text =f"""
-   -------------------------------------------
-   |  Metric  | Average |   Max   |   Last   |
-   -------------------------------------------
-   | Accuracy | {avg_acc :>6.1f}% | {max_acc :>6.1f}% | {last_acc :>6.1f}% |
-   -------------------------------------------
-   |   WPM    | {avg_wpm :^7} | {max_wpm :^7} | {last_wpm :^7} |
-   -------------------------------------------
+   ---------------------------------------
+   |  Metric  | Average |  Max  |  Last  |
+   ---------------------------------------
+   | Accuracy |{avg_acc :>6.1f}% |{max_acc :>6.1f}% |{last_acc :>6.1f}% |
+   ---------------------------------------
+   |   WPM    |{avg_wpm :^7} |{max_wpm :^7} |{last_wpm :^7} |
+   ---------------------------------------
 
    Char: {stats .total_chars_typed }
    Mistakes: {stats .total_mistakes }
    Typing time: {stats .total_typing_time }s
    Roulettes: {game .bullets_loaded }
+   Best Combo: {game .max_combo }
+   Rank: {rank }
 """
     widgets .screen_text .insert (tk .END ,"\n   Result: ")
     if status_type =="Won":widgets .screen_text .insert (tk .END ," Won ","tag_won")
@@ -812,10 +933,11 @@ def show_stats_on_screen (status_type ):
     typewriter_insert (stats_text ,0 )
 
 def get_match_summary():
-    # Calculate aggregate stats for score display and ranking.
+# Calculate aggregate stats for score display and ranking.
     avg_wpm = sum(stats.wpm_list) // len(stats.wpm_list) if stats.wpm_list else 0
     max_wpm = max(stats.wpm_list) if stats.wpm_list else 0
     avg_acc = sum(stats.acc_list) / len(stats.acc_list) if stats.acc_list else 0.0
+    rank = calculate_rank(avg_wpm, avg_acc, game.match_status)
     return {
         "avg_wpm": avg_wpm,
         "max_wpm": max_wpm,
@@ -823,7 +945,22 @@ def get_match_summary():
         "chars": stats.total_chars_typed,
         "mistakes": stats.total_mistakes,
         "roulettes": game.bullets_loaded,
+        "rank": rank,
     }
+
+def calculate_rank(avg_wpm, avg_acc, status_type):
+    # Convert overall typing performance into a letter rank.
+    if status_type != "Won":
+        if avg_acc >= 92 and avg_wpm >= 45:
+            return "B"
+        return "C"
+    if avg_acc >= 98 and avg_wpm >= 75:
+        return "S"
+    if avg_acc >= 95 and avg_wpm >= 60:
+        return "A"
+    if avg_acc >= 90 and avg_wpm >= 45:
+        return "B"
+    return "C"
 
 def save_leaderboard_result(status_type):
     # Save the current finished match into the local leaderboard.
@@ -871,6 +1008,7 @@ def transition_monitor_to_center ():
 def game_win ():
 # Handle a winning match result.
     game .game_active =False 
+    game .match_status ="Won"
     if game .timer_job :
         widgets .root .after_cancel (game .timer_job )
         game .timer_job =None 
@@ -885,6 +1023,7 @@ def game_win ():
 def game_over (by_roulette =False ,by_timeout =False ):
 # Handle a losing match result.
     game .game_active =False 
+    game .match_status ="Lost"
     if game .timer_job :
         widgets .root .after_cancel (game .timer_job )
         game .timer_job =None 
@@ -1120,7 +1259,7 @@ def show_multiplayer_menu ():
     try :widgets .main_canvas .itemconfigure (widgets .menu_screen_text_window_id ,state ="hidden")
     except :pass 
     cx =layout .screen_w *0.25 
-    widgets .main_canvas .create_text (cx ,layout .screen_h *0.38 ,text ="MULTIPLAYER",font =("Courier New",42 ,"bold"),fill ="#FF8C00",tags ="multiplayer_ui")
+    widgets .main_canvas .create_text (cx ,layout .screen_h *0.35 ,text ="MULTIPLAYER",font =("Courier New",42 ,"bold"),fill ="#FF8C00",tags ="multiplayer_ui")
     widgets .main_canvas .create_text (cx ,layout .screen_h *0.48 ,text =MULTIPLAYER_RULES ,font =("Courier New",13 ,"bold"),fill ="#d9d0c0",justify ="left",width =720 ,tags ="multiplayer_ui")
     create_canvas_button (cx ,layout .screen_h *0.68 ,500 ,70 ,"Host Game",start_host_lobby ,ui_tag ="multiplayer_ui")
     create_canvas_button (cx ,layout .screen_h *0.78 ,500 ,70 ,"Join Game",join_host_lobby ,ui_tag ="multiplayer_ui")
@@ -1163,7 +1302,7 @@ def show_leaderboard_menu():
     except:
         pass
     cx = layout.screen_w * 0.25
-    widgets.main_canvas.create_text(cx, layout.screen_h * 0.30, text="LEADERBOARD", font=("Courier New", 42, "bold"), fill="#FF8C00", tags="leaderboard_ui")
+    widgets.main_canvas.create_text(cx, layout.screen_h * 0.35, text="LEADERBOARD", font=("Courier New", 42, "bold"), fill="#FF8C00", tags="leaderboard_ui")
     rows = leaderboard.top_entries(8)
     if rows:
         lines = [" Rank Player        Result WPM  ACC   Date", " ---------------------------------------------"]
