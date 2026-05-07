@@ -345,9 +345,10 @@ class GameView:
         btn_height = 80
         self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.40, btn_width, btn_height, "Single Player", self.callbacks["single_player"], ui_tag="menu_btn")
         self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.51, btn_width, btn_height, "Multiplayer", self.callbacks["show_multiplayer_menu"], ui_tag="menu_btn")
-        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.62, btn_width, btn_height, "Leaderboard", self.callbacks["show_leaderboard"], ui_tag="menu_btn")
-        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.73, btn_width, btn_height, "Options", lambda: self.callbacks["show_options"]("main"), ui_tag="menu_btn")
-        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.84, btn_width, btn_height, "Exit", self.callbacks["exit_game"], ui_tag="menu_btn")
+        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.62, btn_width, btn_height, "Missions", self.callbacks["show_missions"], ui_tag="menu_btn")
+        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.73, btn_width, btn_height, "Leaderboard", self.callbacks["show_leaderboard"], ui_tag="menu_btn")
+        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.84, btn_width, btn_height, "Options", lambda: self.callbacks["show_options"]("main"), ui_tag="menu_btn")
+        self.create_canvas_button(self.layout.screen_w * 0.25, self.layout.screen_h * 0.92, btn_width, btn_height, "Exit", self.callbacks["exit_game"], ui_tag="menu_btn")
 
     def _draw_menu_monitor(self):
         # Draw the menu monitor and intro text.
@@ -429,15 +430,44 @@ class GameView:
         cx = self.layout.screen_w * 0.25
         self.widgets.main_canvas.create_text(cx, self.layout.screen_h * 0.30, text="LEADERBOARD", font=("Courier New", 42, "bold"), fill="#FF8C00", tags="leaderboard_ui")
         if rows:
-            lines = [" Rank Player        Result WPM  ACC   Date", " ---------------------------------------------"]
+            lines = [" Rank Player        Result COMP   WPM  Date", " ----------------------------------------------"]
             for index, row in enumerate(rows, 1):
                 player = str(row.get("player", "Player"))[:12]
-                lines.append(f" {index:>2}.  {player:<12} {row.get('result', 'Lost'):<5} {row.get('avg_wpm', 0):>3}  {row.get('avg_acc', 0):>5.1f}%  {row.get('created_at', '')}")
+                completion_rate = row.get("completion_rate", row.get("avg_acc", 0))
+                lines.append(f" {index:>2}.  {player:<12} {row.get('result', 'Lost'):<5} {completion_rate:>5.1f}%  {row.get('avg_wpm', 0):>3}  {row.get('created_at', '')}")
             board_text = "\n".join(lines)
         else:
             board_text = "No results yet.\nFinish a match to create your first record."
         self.widgets.main_canvas.create_text(cx, self.layout.screen_h * 0.50, text=board_text, font=("Courier New", 16, "bold"), fill="#72d477", justify="left", width=780, tags="leaderboard_ui")
         self.create_canvas_button(cx, self.layout.screen_h * 0.78, 500, 70, "Back", self.callbacks["show_main_menu"], ui_tag="leaderboard_ui")
+
+    def show_missions_menu(self, rows):
+        # Render the persistent mission progress scene.
+        self.widgets.main_canvas.delete("menu_btn", "missions_ui")
+        self._hide_menu_monitor()
+        cx = self.layout.screen_w * 0.25
+        self.widgets.main_canvas.create_text(cx, self.layout.screen_h * 0.30, text="MISSIONS", font=("Courier New", 42, "bold"), fill="#FF8C00", tags="missions_ui")
+        if rows:
+            lines = []
+            for row in rows:
+                state = "Done" if row["complete"] else f"{row['display_progress']}/{row['target']}"
+                lines.append(f"{row['title']}: {state}")
+                lines.append(f"  {row['description']}")
+                lines.append("")
+            mission_text = "\n".join(lines).strip()
+        else:
+            mission_text = "No missions available."
+        self.widgets.main_canvas.create_text(
+            cx,
+            self.layout.screen_h * 0.52,
+            text=mission_text,
+            font=("Courier New", 16, "bold"),
+            fill="#72d477",
+            justify="left",
+            width=780,
+            tags="missions_ui",
+        )
+        self.create_canvas_button(cx, self.layout.screen_h * 0.82, 500, 70, "Back", self.callbacks["show_main_menu"], ui_tag="missions_ui")
 
     def show_options(self, from_state):
         # Render the options popup.
@@ -478,7 +508,7 @@ class GameView:
         elif self.menu.options_previous_state == "ingame":
             self.widgets.main_canvas.itemconfigure("ingame_btn", state="normal")
 
-    def show_stats_on_screen(self, status_type, summary, last_wpm, max_acc, last_acc):
+    def show_stats_on_screen(self, status_type, summary, last_wpm, best_completion, article_completion):
         # Render end-of-match stats text on the monitor.
         self.widgets.screen_text.config(state=tk.NORMAL)
         self.widgets.screen_text.delete("1.0", tk.END)
@@ -486,7 +516,7 @@ class GameView:
    -------------------------------------------
    |  Metric  | Average |   Max   |   Last   |
    -------------------------------------------
-   | Accuracy | {summary['avg_acc']:>6.1f}% | {max_acc:>6.1f}% | {last_acc:>6.1f}% |
+   | Complete | {summary['completion_rate']:>6.1f}% | {best_completion:>6.1f}% | {article_completion:>6.1f}% |
    -------------------------------------------
    |   WPM    | {summary['avg_wpm']:^7} | {summary['max_wpm']:^7} | {last_wpm:^7} |
    -------------------------------------------
@@ -530,4 +560,3 @@ class GameView:
         # Hide the menu monitor text if it exists.
         if self.widgets.menu_screen_text_window_id:
             self.widgets.main_canvas.itemconfigure(self.widgets.menu_screen_text_window_id, state="hidden")
-

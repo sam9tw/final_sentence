@@ -13,9 +13,9 @@ class LeaderboardEntry:
 
     player: str
     result: str
+    completion_rate: float
     avg_wpm: int
     max_wpm: int
-    avg_acc: float
     chars: int
     mistakes: int
     roulettes: int
@@ -51,8 +51,10 @@ class LeaderboardStore:
         rows.sort(
             key=lambda row: (
                 1 if row.get("result") == "Won" else 0,
+                row.get("completion_rate", row.get("avg_acc", 0)),
                 row.get("avg_wpm", 0),
-                row.get("avg_acc", 0),
+                -row.get("mistakes", 0),
+                row.get("max_wpm", 0),
                 row.get("chars", 0),
             ),
             reverse=True,
@@ -60,17 +62,16 @@ class LeaderboardStore:
         return rows[:limit]
 
 
-def create_entry(player, result, avg_wpm, max_wpm, avg_acc, chars, mistakes, roulettes):
+def create_entry(player, result, completion_rate, avg_wpm, max_wpm, chars, mistakes, roulettes):
     # Build a leaderboard entry from match stats.
     return LeaderboardEntry(
         player=player or "Player",
         result=result,
+        completion_rate=completion_rate,
         avg_wpm=avg_wpm,
         max_wpm=max_wpm,
-        avg_acc=avg_acc,
         chars=chars,
         mistakes=mistakes,
         roulettes=roulettes,
         created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
-

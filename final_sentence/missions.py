@@ -28,11 +28,11 @@ MISSION_DEFS = [
         "metric": "best_combo",
     },
     {
-        "id": "accuracy_95",
-        "title": "Clean Typist",
-        "description": "Finish a run with 95% accuracy.",
-        "target": 95,
-        "metric": "best_accuracy",
+        "id": "completion_80",
+        "title": "Almost There",
+        "description": "Reach 80% article completion in a run.",
+        "target": 80,
+        "metric": "best_completion",
     },
     {
         "id": "roulette_survivor",
@@ -57,7 +57,7 @@ class MissionStore:
             "finished_runs": 0,
             "wins": 0,
             "best_combo": 0,
-            "best_accuracy": 0.0,
+            "best_completion": 0.0,
             "roulette_survivals": 0,
         }
         if not self.path.exists():
@@ -81,7 +81,7 @@ class MissionStore:
         if summary.get("result") == "Won":
             data["wins"] += 1
         data["best_combo"] = max(data["best_combo"], summary.get("best_combo", 0))
-        data["best_accuracy"] = max(data["best_accuracy"], summary.get("avg_acc", 0.0))
+        data["best_completion"] = max(data["best_completion"], summary.get("completion_rate", 0.0))
         data["roulette_survivals"] += max(0, summary.get("roulette_survivals", 0))
         self.save(data)
         return data
@@ -107,4 +107,3 @@ class MissionStore:
                 }
             )
         return rows
-

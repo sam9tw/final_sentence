@@ -14,6 +14,7 @@ from .audio import AudioManager
 from .image_tools import create_rotated_text_image 
 from .leaderboard import LeaderboardStore, create_entry
 from .models import AssetStore ,GameState ,LayoutState ,MenuState ,MultiplayerState ,SettingsState ,StatsState ,WidgetStore 
+from .missions import MissionStore
 from .network import get_local_ip ,read_json_lines ,send_json 
 from .paths import image_path 
 from .texts import MULTIPLAYER_RULES ,PREDEFINED_TEXTS ,format_article_text 
@@ -31,6 +32,7 @@ widgets =WidgetStore ()
 #Pygame音效
 audio =AudioManager ()
 leaderboard = LeaderboardStore()
+missions = MissionStore()
 view =None 
 
 #音量變數(預設100%)
@@ -53,6 +55,7 @@ game .current_index =0
 game .mistakes =0 
 game .max_mistakes =3 
 game .bullets_loaded =0 
+game .roulette_survivals =0 
 
 game .chambers =[False ]*6 
 
@@ -312,16 +315,18 @@ def handle_network_event (event ):
             show_waiting_lobby ("Connection closed.\nReturn to menu and try again.")
 
 def record_article_stats ():
-# Record WPM and accuracy for one passage.
+# Record WPM, accuracy, and completion for one passage.
     time_spent =240 -game .time_left 
     if time_spent <=0 :time_spent =1 
     stats .total_typing_time +=time_spent 
     wpm =(stats .article_chars /5.0 )/(time_spent /60.0 )if stats .article_chars >0 else 0 
     total_attempts =stats .article_chars +stats .article_mistakes 
     acc =(stats .article_chars /total_attempts *100.0 )if total_attempts >0 else 0.0 
+    completion =compute_current_article_completion ()
     if total_attempts >0 :
         stats .wpm_list .append (int (wpm ))
         stats .acc_list .append (round (acc ,1 ))
+        stats .completion_list .append (round (completion ,1 ))
     stats .article_chars =0 
     stats .article_mistakes =0 
 
@@ -337,6 +342,7 @@ def initialize_game (article_indices =None ):
     game .current_index =START_INDEX 
     game .chambers =[False ]*6 
     game .bullets_loaded =0 
+    game .roulette_survivals =0 
     game .roulette_revealed =False 
     game .game_active =True 
     game .can_exit =False 
@@ -353,6 +359,7 @@ def initialize_game (article_indices =None ):
     stats .article_mistakes =0 
     stats .wpm_list =[]
     stats .acc_list =[]
+    stats .completion_list =[]
     multiplayer .remote_progress ={}
     game .leaderboard_saved = False
     game .current_combo =0 
@@ -576,6 +583,7 @@ def resolve_roulette (target_chamber ):
         game_over (by_roulette =True )
     else :
         audio .play ("click")
+        game .roulette_survivals +=1 
         game .mistakes =0 
         update_hud ()
         target_content =game .articles [game .current_article_idx ]
@@ -840,37 +848,45 @@ def show_stats_on_screen (status_type ):
 # Render match stats on the monitor.
     summary =get_match_summary ()
     last_wpm =stats .wpm_list [-1 ]if stats .wpm_list else 0 
-    max_acc =max (stats .acc_list )if stats .acc_list else 0.0 
-    last_acc =stats .acc_list [-1 ]if stats .acc_list else 0.0 
-    view .show_stats_on_screen (status_type ,summary ,last_wpm ,max_acc ,last_acc )
+    best_completion =max (stats .completion_list )if stats .completion_list else summary ["completion_rate"]
+    article_completion =stats .completion_list [-1 ]if stats .completion_list else summary ["completion_rate"]
+    view .show_stats_on_screen (status_type ,summary ,last_wpm ,best_completion ,article_completion )
+
+def compute_current_article_completion ():
+# Convert the active article progress into a per-article percentage.
+    if not game .articles or game .current_article_idx >=len (game .articles ):
+        return 0.0 
+    current_article =game .articles [game .current_article_idx ]
+    if not current_article :
+        return 0.0 
+    return min (100.0 ,(game .current_index /len (current_article ))*100.0 )
 
 def get_match_summary():
 # Calculate aggregate stats for score display and ranking.
     avg_wpm = sum(stats.wpm_list) // len(stats.wpm_list) if stats.wpm_list else 0
     max_wpm = max(stats.wpm_list) if stats.wpm_list else 0
-    avg_acc = sum(stats.acc_list) / len(stats.acc_list) if stats.acc_list else 0.0
-    rank = calculate_rank(avg_wpm, avg_acc, game.match_status)
+    completion_rate = 100.0 if game.match_status == "Won" else compute_progress_percent()
+    rank = calculate_rank(completion_rate, avg_wpm, stats.total_mistakes, game.match_status)
     return {
+        "completion_rate": round(completion_rate, 1),
         "avg_wpm": avg_wpm,
         "max_wpm": max_wpm,
-        "avg_acc": round(avg_acc, 1),
         "chars": stats.total_chars_typed,
         "mistakes": stats.total_mistakes,
         "roulettes": game.bullets_loaded,
+        "best_combo": game.max_combo,
+        "result": game.match_status,
+        "roulette_survivals": game.roulette_survivals,
         "rank": rank,
     }
 
-def calculate_rank(avg_wpm, avg_acc, status_type):
-    # Convert overall typing performance into a letter rank.
-    if status_type != "Won":
-        if avg_acc >= 92 and avg_wpm >= 45:
-            return "B"
-        return "C"
-    if avg_acc >= 98 and avg_wpm >= 75:
+def calculate_rank(completion_rate, avg_wpm, total_mistakes, status_type):
+    # Convert match outcome into a completion-led letter rank.
+    if status_type == "Won" and completion_rate >= 100 and avg_wpm >= 75 and total_mistakes <= 8:
         return "S"
-    if avg_acc >= 95 and avg_wpm >= 60:
+    if status_type == "Won" and completion_rate >= 100 and avg_wpm >= 60:
         return "A"
-    if avg_acc >= 90 and avg_wpm >= 45:
+    if completion_rate >= 80:
         return "B"
     return "C"
 
@@ -882,15 +898,19 @@ def save_leaderboard_result(status_type):
     entry = create_entry(
         multiplayer.player_name,
         status_type,
+        summary["completion_rate"],
         summary["avg_wpm"],
         summary["max_wpm"],
-        summary["avg_acc"],
         summary["chars"],
         summary["mistakes"],
         summary["roulettes"],
     )
     leaderboard.save_entry(entry)
     game.leaderboard_saved = True
+
+def update_mission_progress():
+    # Apply the latest match summary to the persistent mission system.
+    missions.update_from_run(get_match_summary())
 
     #轉場動畫
 def transition_monitor_to_center ():
@@ -960,6 +980,7 @@ def setup_termination_scene (status_type ):
         widgets .main_canvas .delete ("table","kb","clock","clock_text","rank","rank_text","revolver","lives")
         widgets .main_canvas .delete ("fade_overlay")
         transition_monitor_to_center ()
+        update_mission_progress ()
         save_leaderboard_result (status_type)
         show_stats_on_screen (status_type )
 
@@ -1103,6 +1124,10 @@ def show_leaderboard_menu():
     # Display the saved local leaderboard.
     view .show_leaderboard_menu (leaderboard .top_entries (8 ))
 
+def show_missions_menu():
+    # Display the persistent mission progress screen.
+    view .show_missions_menu (missions .mission_rows ())
+
 def toggle_ingame_menu ():
 # Open or close the in-game menu.
     if not game .game_active or game .is_pre_game or game .is_frozen or game .is_resting or game .in_menu or game .in_transition :return 
@@ -1230,6 +1255,7 @@ def main ():
     "set_music":set_music_vol ,
     "set_sfx":set_sfx_vol ,
     "show_leaderboard":show_leaderboard_menu ,
+    "show_missions":show_missions_menu ,
     "typewriter":typewriter_insert ,
     "local_ip":get_local_ip ,
     "port":lambda :MULTIPLAYER_PORT ,

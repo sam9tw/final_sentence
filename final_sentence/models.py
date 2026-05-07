@@ -93,6 +93,7 @@ class StatsState:
     article_mistakes: int = 0
     wpm_list: list = field(default_factory=list)
     acc_list: list = field(default_factory=list)
+    completion_list: list = field(default_factory=list)
 
 
 @dataclass
